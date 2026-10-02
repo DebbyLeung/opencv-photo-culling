@@ -1,0 +1,42 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  # ---------------------------------------------------------------------------
+  # 1. Essential File Sanity & Syntax Checks
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+
+  # ---------------------------------------------------------------------------
+  # 2. Modern Linting & Formatting (Ruff)
+  # Replaces Flake8, Black, isort, bandit, and pydocstyle
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.8
+    hooks:
+      # Run the linter & auto-fix errors
+      - id: ruff
+        args: [--fix]
+      # Run the formatter (replaces Black)
+      - id: ruff-format
+
+
+
+  # # ---------------------------------------------------------------------------
+  # # 4. Security & Secret Scanning
+  # # ---------------------------------------------------------------------------
+  # - repo: https://github.com/gitleaks/gitleaks
+  #   rev: v8.18.3
+  #   hooks:
+  #     - id: gitleaks
