@@ -48,6 +48,9 @@ This system receives auto-pushed 2MP JPEG previews over Wi-Fi (FTP) directly fro
   2. **Blink Detection:** Extracts 68 facial landmarks to compute **Eye Aspect Ratio (EAR)** and rejects closed-eye or mid-blink shots.
 - **🔄 Active Option-B RAW Sync:** When a JPEG passes inspection, the daemon connects back to the camera's internal FTP file structure to pull the matching high-res RAW (`.NEF` / `.CR3`).
 - **📊 Real-Time Web Dashboard:** Web-based UI built with Tailwind CSS, Alpine.js, and FastAPI WebSockets for live scoring visualization.
+- **⏯️ Filtering Control:** The dashboard's **Auto Run Filtering** checkbox enables or pauses automatic filtering of incoming JPEG uploads.
+- **▶️ Manual Filtering:** Use **Run Filter** in the dashboard to filter JPEGs already waiting in the incoming folder.
+- **⭐ Quality Ranking:** The dashboard ranks filtered photos from 5 to 1 using the configured blur and eye thresholds, and auto-selects score-5 photos.
 - **📁 Automated Lightroom Routing:** Directs approved JPEGs and synced RAWs straight into Lightroom Classic's watched folder for seamless auto-importing.
 
 ---
@@ -113,12 +116,16 @@ LAPTOP_FTP_PASS=12345
 
 # Pipeline Directory
 BASE_DIR=./Culling_Workflow
+DASHBOARD_URL=http://127.0.0.1:8000
 
 # Culling Thresholds
 AUTO_PULL_RAW=true
 BLUR_THRESHOLD=110.0
 EAR_THRESHOLD=0.21
 ```
+
+If the dashboard server runs on a different port, set `DASHBOARD_URL` to that
+server address so filtered photo scores can be sent to the dashboard.
 
 ---
 

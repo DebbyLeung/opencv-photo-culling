@@ -12,23 +12,27 @@ LAPTOP_FTP_PORT = int(os.getenv("LAPTOP_FTP_PORT", 21))
 LAPTOP_FTP_USER = os.getenv("LAPTOP_FTP_USER", "camera")
 LAPTOP_FTP_PASS = os.getenv("LAPTOP_FTP_PASS", "12345")
 
-BASE_DIR = os.getenv("BASE_DIR", "./Culling_Workflow")
-INCOMING_DIR = os.path.join(BASE_DIR, "1_Incoming_FTP")
 
-os.makedirs(INCOMING_DIR, exist_ok=True)
-
-
-def run_ftp_server():
+def run_ftp_server(incoming_dir: str, on_media_changed=None):
     authorizer = DummyAuthorizer()
     # Grant camera full permissions (Read/Write/Delete/Create) inside incoming folder
-    authorizer.add_user(LAPTOP_FTP_USER, LAPTOP_FTP_PASS, INCOMING_DIR, perm="elradfmw")
+    authorizer.add_user(LAPTOP_FTP_USER, LAPTOP_FTP_PASS, incoming_dir, perm="elradfmw")
 
-    handler = FTPHandler
+    class IncomingFTPHandler(FTPHandler):
+        def on_file_received(self, file):
+            if on_media_changed is not None:
+                on_media_changed(file)
+
+        def on_file_removed(self, file):
+            if on_media_changed is not None:
+                on_media_changed(file)
+
+    handler = IncomingFTPHandler
     handler.authorizer = authorizer
 
     server = FTPServer(("0.0.0.0", LAPTOP_FTP_PORT), handler)
     print(f"[+] Dedicated FTP Server running on Port {LAPTOP_FTP_PORT}...")
-    print(f"[+] Receiving camera uploads to: {os.path.abspath(INCOMING_DIR)}")
+    print(f"[+] Receiving camera uploads to: {os.path.abspath(incoming_dir)}")
 
     try:
         server.serve_forever()

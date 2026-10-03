@@ -8,7 +8,7 @@
   <!-- Tailwind CSS via CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Application Logic (app.js) -->
-  <script src="app.js"></script>
+  <script defer src="app.js?v=8"></script>
   <!-- Alpine.js -->
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
@@ -45,24 +45,117 @@
   <!-- Main Content Area -->
   <main class="flex-1 p-6 overflow-y-auto">
     <!-- Folder setting for Photos -->
-    <div class="bg-gray-800 p-4 rounded-lg text-white mb-6" x-data="cullingApp()">
+    <div class="bg-gray-800 p-4 rounded-lg text-white mb-6">
       <h2 class="text-lg font-bold mb-4">📁 Lightroom Folder Settings</h2>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-sm mb-1">Watched Folder Path:</label>
-          <input type="text" x-model="watchedFolder" class="w-full bg-gray-700 p-2 rounded text-sm text-white" />
-        </div>
-        <div>
-          <label class="block text-sm mb-1">Destination Folder Path:</label>
-          <input type="text" x-model="destinationFolder" class="w-full bg-gray-700 p-2 rounded text-sm text-white" />
+      <div class="grid-rows-2 gap-4">
+        <div class="flex gap-2 items-center">
+          <span x-text="workflowFolder"
+            class="flex-1 min-w-0 bg-gray-700 p-2 rounded text-sm text-white break-all"></span>
+          <button @click="saveWorkflowFolder()"
+            class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-xs font-semibold whitespace-nowrap min-w-[140px]">
+            Save Workflow Path
+          </button>
         </div>
       </div>
-      <button @click="saveConfig()"
-        class="mt-4 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-semibold">
-        Save Folder Settings
-      </button>
+      <label class="mt-4 flex items-center gap-3 text-sm font-medium">
+        <input type="checkbox" x-model="autoRunFiltering" @click="setFilterStarted()"
+          class="h-4 w-4 rounded border-slate-500 bg-slate-700 text-blue-600 focus:ring-blue-500" />
+        <span>Auto Run Filtering</span>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <button type="button" @click.prevent.stop="runFilter()" :disabled="manualFilterBusy"
+            :aria-busy="manualFilterBusy"
+            :class="manualFilterBusy ? 'cursor-wait bg-gray-600 text-gray-300' : 'cursor-pointer bg-emerald-600 text-white hover:bg-emerald-500'"
+            class="rounded px-4 py-2 text-sm font-semibold disabled:opacity-80">
+            <span x-text="manualFilterBusy ? 'Filtering...' : 'Run Filter'"></span>
+          </button>
+          <span x-show="manualFilterMessage" x-text="manualFilterMessage" class="text-sm text-slate-300"></span>
+          <span x-show="manualFilterError" x-text="manualFilterError" class="text-sm text-rose-400"></span>
+        </div>
+      </label>
+      <p x-show="filteringSaveError" x-text="filteringSaveError" class="mt-2 text-sm text-rose-400"></p>
       <span x-show="saveSuccess" class="ml-3 text-green-400 text-sm">✓ Settings updated!</span>
     </div>
+
+    <section class="mb-6 overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
+      <div class="flex items-center justify-between px-4 py-3">
+        <span class="font-semibold">
+          Incoming JPGs
+          <span class="ml-2 text-sm text-slate-400" x-text="`(${incomingJpgs.length})`"></span>
+        </span>
+        <div class="flex items-center gap-2">
+          <button @click="refreshMedia()" :disabled="refreshingMedia"
+            class="rounded bg-slate-600 px-3 py-1.5 text-xs font-semibold hover:bg-slate-500 disabled:cursor-wait disabled:opacity-60">
+            <span x-text="refreshingMedia ? 'Refreshing...' : 'Refresh'"></span>
+          </button>
+          <span x-show="mediaRefreshError" x-text="mediaRefreshError" class="text-xs text-rose-400"></span>
+          <button @click="jpgExpanded = !jpgExpanded" :aria-expanded="jpgExpanded"
+            class="px-1 text-lg font-semibold hover:text-white" aria-label="Toggle incoming JPGs">
+            <span x-text="jpgExpanded ? '−' : '+'"></span>
+          </button>
+        </div>
+      </div>
+      <div x-show="jpgExpanded" class="border-t border-slate-700 p-4">
+        <div x-show="incomingJpgs.length === 0" class="text-sm text-slate-400">No JPGs currently in 1_Incoming_FTP.
+        </div>
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+          <template x-for="file in incomingJpgs" :key="file.filename">
+            <a :href="file.url" target="_blank" class="overflow-hidden rounded bg-slate-900">
+              <img :src="file.url" :alt="file.filename" class="aspect-[3/2] w-full object-cover" />
+              <span class="block truncate p-2 text-xs text-slate-300" x-text="file.filename"></span>
+            </a>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <section class="mb-6 overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
+      <button @click="filteredExpanded = !filteredExpanded" :aria-expanded="filteredExpanded"
+        class="flex w-full items-center justify-between px-4 py-3 text-left font-semibold hover:bg-slate-700">
+        <span>Filtered Incoming <span class="ml-2 text-sm text-slate-400" x-text="`(${photos.length})`"></span></span>
+        <span x-text="filteredExpanded ? '−' : '+'"></span>
+      </button>
+      <div x-show="filteredExpanded" class="border-t border-slate-700 p-4">
+        <div x-show="photos.length === 0" class="text-sm text-slate-400">
+          No filtered photos yet.
+        </div>
+      </div>
+      <ul class="divide-y divide-slate-700">
+        <template x-for="photo in scoredPhotos" :key="photo.filename">
+          <li class="flex items-center gap-3 p-3">
+            <img :src="photo.url" :alt="photo.filename" class="h-12 w-16 rounded object-cover" />
+            <span class="min-w-0 flex-1 truncate font-mono text-sm" x-text="photo.filename"></span>
+            <span class="shrink-0 font-semibold text-amber-300" x-text="`${photo.score}/5`"></span>
+            <label class="flex shrink-0 items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" x-model="photo.selected"
+                class="h-4 w-4 rounded border-slate-500 bg-slate-700 text-emerald-500 focus:ring-emerald-500" />
+              Select
+            </label>
+          </li>
+        </template>
+      </ul>
+    </section>
+
+    <section class="mb-6 overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
+      <button @click="rawExpanded = !rawExpanded" :aria-expanded="rawExpanded"
+        class="flex w-full items-center justify-between px-4 py-3 text-left font-semibold hover:bg-slate-700">
+        <span>RAW Files <span class="ml-2 text-sm text-slate-400" x-text="`(${rawFiles.length})`"></span></span>
+        <span x-text="rawExpanded ? '−' : '+'"></span>
+      </button>
+      <div x-show="rawExpanded" class="border-t border-slate-700 p-4">
+        <div x-show="rawFiles.length === 0" class="text-sm text-slate-400">No RAW files currently in the Lightroom watch
+          folder.</div>
+        <ul class="divide-y divide-slate-700">
+          <template x-for="file in rawFiles" :key="file.filename">
+            <li class="flex justify-between gap-4 py-2 text-sm">
+              <span class="truncate font-mono text-slate-300" x-text="file.filename"></span>
+              <span class="shrink-0 text-slate-500" x-text="`${(file.size / 1048576).toFixed(1)} MB`"></span>
+            </li>
+          </template>
+        </ul>
+      </div>
+    </section>
+
     <!-- Grid Layout for Photos -->
     <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
 
