@@ -89,10 +89,11 @@ This system receives auto-pushed 2MP JPEG previews over Wi-Fi (FTP) directly fro
 Clone this repository and install dependencies:
 
 ```bash
-git clone https://github.com/your-username/edge-ai-photo-culling.git
-cd edge-ai-photo-culling
+git clone https://github.com/DebbyLeung/opencv-photo-culling.git
+cd opencv-photo-culling
 
-pip install onnxruntime opencv-python pyftpdlib watchdog python-dotenv fastapi uvicorn
+pip install -r requirements.txt
+mkdir -p data/model && curl -L -o data/face_landmarks_68.onnx "https://huggingface.co"
 ```
 
 *Note: For NVIDIA GPU acceleration, install `onnxruntime-gpu` instead of `onnxruntime`.*
