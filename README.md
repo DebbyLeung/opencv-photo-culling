@@ -92,15 +92,17 @@ Clone this repository and install dependencies:
 git clone https://github.com/DebbyLeung/opencv-photo-culling.git
 cd opencv-photo-culling
 
+cp sample.env .env
 pip install -r requirements.txt
 mkdir -p data/model && curl -L -o data/face_landmarks_68.onnx "https://huggingface.co"
+
 ```
 
 *Note: For NVIDIA GPU acceleration, install `onnxruntime-gpu` instead of `onnxruntime`.*
 
 ### 3. Environment Configuration (`.env`)
 
-Create a `.env` file in the root directory:
+Edit a `.env` file in the root directory:
 
 ```ini
 # Camera FTP Connection (For Active RAW Pull)
