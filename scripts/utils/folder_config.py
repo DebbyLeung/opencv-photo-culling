@@ -1,6 +1,14 @@
+import enum
 import os
 
 from pydantic import BaseModel, model_validator
+
+
+class FolderNames(enum.Enum):
+    FTP_FOLDER = "1_Incoming_FTP"
+    TRASH_FOLDER = "2_AI_Trash"
+    WATCHED_FOLDER = "3_Lightroom_Watch"
+    DESTINATION_FOLDER = "Destination"
 
 
 class FolderConfig(BaseModel):

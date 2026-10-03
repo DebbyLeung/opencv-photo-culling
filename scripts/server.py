@@ -19,9 +19,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from scripts.filtering_settings import is_filtering_enabled, set_filtering_enabled
-from scripts.ftp_server import run_ftp_server
+from scripts.ftp_server import pull_matching_raw, run_ftp_server
+from scripts.photo_culling import IncomingPhotoHandler
 from scripts.utils import FolderConfig
+from scripts.utils.folder_config import FolderNames
 
 
 @asynccontextmanager
@@ -40,7 +41,7 @@ class FilteredPhotoResult(BaseModel):
     blur_score: float
     ear_score: float | None = None
     reason: str = ""
-    folder: Literal["2_AI_Trash", "3_Lightroom_Watch"]
+    folder: Literal[FolderNames.TRASH_FOLDER, FolderNames.WATCHED_FOLDER]
 
 
 def notify_media_changed(filename: str):
@@ -66,15 +67,16 @@ class AppManager(FastAPI):
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        self.set_config_data(self.BASE_DIR)
         # 儲存目前設定
-        self.main_event_loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+        self.set_config_data(self.BASE_DIR)
         # Run server inside the passed event loop
         self.ftp_thread = threading.Thread(
             target=run_ftp_server,
             args=(self._config_data.ftp_folder, notify_media_changed),
             daemon=True,
         )
+        self.photo_handler = IncomingPhotoHandler(self._config_data)
+        self.photo_handler.consumer_thread.start()
 
     @property
     def config_data(self):
@@ -85,14 +87,23 @@ class AppManager(FastAPI):
             return self._config_data
         self.base_dir = new_dir
         self._config_data = FolderConfig(
-            **{
-                "ftp_folder": self.base_dir + "/1_Incoming_FTP",
-                "trash_folder": self.base_dir + "/2_AI_Trash",
-                "watched_folder": self.base_dir + "/3_Lightroom_Watch",
-                "destination_folder": self.base_dir + "/Destination",
-            }
+            ftp_folder=self.base_dir + "/1_Incoming_FTP",
+            trash_folder=self.base_dir + "/2_AI_Trash",
+            watched_folder=self.base_dir + "/3_Lightroom_Watch",
+            destination_folder=self.base_dir + "/Destination",
         )
+        if hasattr(self, "observer"):
+            self.observer.stop()
+            self.observer.join()
+        self.setup_observer()
         return self._config_data
+
+    def setup_observer(self):
+        """Sets up the watchdog observer to monitor the incoming FTP folder."""
+        self.observer.schedule(
+            self.photo_handler, path=self._config_data.ftp_folder, recursive=False
+        )
+        self.observer.start()
 
     def start_server_in_loop(self, port: int = 8000):
         """Sets the global loop reference and starts Uvicorn."""
@@ -110,7 +121,7 @@ async def get_config():
     return {
         **app.config_data,
         "workflow_folder": app.base_dir,
-        "auto_run_filtering": is_filtering_enabled(app.BASE_DIR),
+        "auto_run_filtering": not app.photo_handler.is_manual,
     }
 
 
@@ -147,7 +158,7 @@ async def browse_folder():
 
 @app.post("/api/config/auto-run-filtering")
 async def set_auto_run_filtering(config: FilteringConfig):
-    set_filtering_enabled(app.base_dir, config.enabled)
+    app.photo_handler.is_manual = not config.enabled
     return {"auto_run_filtering": config.enabled}
 
 
@@ -285,37 +296,28 @@ async def websocket_endpoint(websocket: WebSocket):
 # ---------------------------------------------------------------------
 # BROADCAST HELPER FUNCTION (Thread-Safe Trigger)
 # ---------------------------------------------------------------------
-def async_broadcast(
-    filename: str,
-    status: str,
-    blur_score: float,
-    ear_score: float | None,
-    reason: str = "",
-    folder_path: str = "3_Lightroom_Watch",
-    blur_threshold: float = 110.0,
-    ear_threshold: float = 0.21,
-):
-    """
-    Thread-safe helper called from culling_daemon.py.
-    Schedules the broadcast on the main asyncio event loop.
-    """
-    # Dispatch to the running FastAPI asyncio loop safely from worker threads
-    if not (app.main_event_loop and app.main_event_loop.is_running()):
-        print(f"[!] Warning: Event loop not ready. Could not broadcast {filename}")
-        return
-    payload = {
-        "event": "NEW_PHOTO",
-        "filename": filename,
-        "url": f"/api/media/filtered/{folder_path}/{quote(filename)}",
-        "status": status,  # "passed" or "rejected"
-        "blurScore": round(float(blur_score), 1),
-        "earScore": round(float(ear_score), 2) if ear_score is not None else None,
-        "blurThreshold": blur_threshold,
-        "earThreshold": ear_threshold,
-        "reason": reason,
-    }
+@app.get("/api/media/pull-raw")
+def start_pull_photos():
+    global continue_pull
+    if continue_pull:
+        return {"message": "Pulling RAW files is already in progress."}
+    continue_pull = True
+    thread_pool = ThreadPoolExecutor(max_workers=4)
+    while continue_pull:
+        if app.photo_handler.pull_raw_queue.empty():
+            continue
+        filename = app.photo_handler.pull_raw_queue.queue.pop()
+        thread_pool.submit(
+            pull_matching_raw, filename, app._config_data.destination_dir
+        )
 
-    asyncio.run_coroutine_threadsafe(manager.broadcast(payload), app.main_event_loop)
+
+@app.get("/api/media/stop-pull-raw")
+def stop_pull_photos():
+    """Stops the pull raw thread pool."""
+    # This is a placeholder; implement logic to stop the thread pool if needed.
+    global continue_pull
+    continue_pull = False
 
 
 @app.get("/api/media/filtered/{folder}/{filename}")
@@ -324,8 +326,8 @@ async def get_filtered_photo(folder: str, filename: str):
         raise HTTPException(status_code=404, detail="Photo not found")
 
     folders = {
-        "2_AI_Trash": app._config_data.trash_folder,
-        "3_Lightroom_Watch": app._config_data.watched_folder,
+        FolderNames.TRASH_FOLDER: app._config_data.trash_folder,
+        FolderNames.WATCHED_FOLDER: app._config_data.watched_folder,
     }
     directory = folders.get(folder)
     if directory is None:
@@ -343,7 +345,7 @@ async def publish_filtered_photo(result: FilteredPhotoResult):
         raise HTTPException(status_code=400, detail="Invalid photo filename")
     directory = (
         app._config_data.trash_folder
-        if result.folder == "2_AI_Trash"
+        if result.folder == FolderNames.TRASH_FOLDER
         else app._config_data.watched_folder
     )
     if not os.path.isfile(os.path.join(directory, result.filename)):

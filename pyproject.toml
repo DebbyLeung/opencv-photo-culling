@@ -12,7 +12,7 @@ select = [
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
 ]
-ignore = []
+ignore = ["E501",  "B008", "C408", "UP007"]  # Ignore line length, line break before binary operator, and other specific rules
 
 [tool.mypy]
 python_version = "3.12"

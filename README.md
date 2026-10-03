@@ -136,13 +136,13 @@ To run the complete pipeline, open three separate terminal windows:
 ### Terminal 1: Local FTP Receiver
 Start the background FTP server to receive incoming 2MP JPEGs from your camera:
 ```bash
-python script/ftp_server.py
+python scripts/ftp_server.py
 ```
 
 ### Terminal 2: Culling Daemon & WebSocket Server
 Start the AI inspection daemon and live WebSocket server:
 ```bash
-python script/culling_daemon.py
+python scripts/photo_culling.py
 ```
 
 ### Terminal 3: Web Dashboard
