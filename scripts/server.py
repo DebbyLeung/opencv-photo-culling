@@ -17,10 +17,11 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 from scripts.filtering_settings import is_filtering_enabled, set_filtering_enabled
 from scripts.ftp_server import run_ftp_server
+from scripts.utils import FolderConfig
 
 
 @asynccontextmanager
@@ -40,21 +41,6 @@ class FilteredPhotoResult(BaseModel):
     ear_score: float | None = None
     reason: str = ""
     folder: Literal["2_AI_Trash", "3_Lightroom_Watch"]
-
-
-class FolderConfig(BaseModel):
-    ftp_folder: str
-    watched_folder: str
-    destination_folder: str
-
-    @model_validator(mode="after")
-    def create_directories(self):
-        # 此時 self 的欄位已經完成初始化與型別檢查
-        os.makedirs(self.watched_folder, exist_ok=True)
-        os.makedirs(self.destination_folder, exist_ok=True)
-        os.makedirs(self.ftp_folder, exist_ok=True)
-
-        return self
 
 
 def notify_media_changed(filename: str):
@@ -101,11 +87,11 @@ class AppManager(FastAPI):
         self._config_data = FolderConfig(
             **{
                 "ftp_folder": self.base_dir + "/1_Incoming_FTP",
+                "trash_folder": self.base_dir + "/2_AI_Trash",
                 "watched_folder": self.base_dir + "/3_Lightroom_Watch",
                 "destination_folder": self.base_dir + "/Destination",
             }
         )
-        os.makedirs(self.base_dir + "/2_AI_Trash", exist_ok=True)
         return self._config_data
 
     def start_server_in_loop(self, port: int = 8000):
@@ -182,8 +168,9 @@ async def run_filter():
         for file_path in file_paths:
             process_photo(
                 file_path,
+                incoming_dir=app._config_data.ftp_folder,
                 watched_dir=app._config_data.watched_folder,
-                trash_dir=os.path.join(app.base_dir, "2_AI_Trash"),
+                trash_dir=app._config_data.trash_folder,
             )
 
     await asyncio.to_thread(process_pending_files)
@@ -337,7 +324,7 @@ async def get_filtered_photo(folder: str, filename: str):
         raise HTTPException(status_code=404, detail="Photo not found")
 
     folders = {
-        "2_AI_Trash": os.path.join(app.base_dir, "2_AI_Trash"),
+        "2_AI_Trash": app._config_data.trash_folder,
         "3_Lightroom_Watch": app._config_data.watched_folder,
     }
     directory = folders.get(folder)
@@ -355,7 +342,7 @@ async def publish_filtered_photo(result: FilteredPhotoResult):
     if os.path.basename(result.filename) != result.filename:
         raise HTTPException(status_code=400, detail="Invalid photo filename")
     directory = (
-        os.path.join(app.base_dir, result.folder)
+        app._config_data.trash_folder
         if result.folder == "2_AI_Trash"
         else app._config_data.watched_folder
     )

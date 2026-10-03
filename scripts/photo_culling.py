@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from ftplib import FTP
@@ -40,6 +41,17 @@ AUTO_PULL_RAW = os.getenv("AUTO_PULL_RAW", "true").lower() in ("true", "1", "yes
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", 110.0))
 EAR_THRESHOLD = float(os.getenv("EAR_THRESHOLD", 0.21))
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://127.0.0.1:8000").rstrip("/")
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cached_score")
+os.makedirs(CACHE_DIR, exist_ok=True)
+APP_BASE_URL = os.getenv("APP_BASE_URL", "localhost:8000")
+BASE_DIR_SAFE = BASE_DIR.replace("\\", "/").replace("/", "_")
+CACHE_FILE = os.path.join(CACHE_DIR, f"{BASE_DIR_SAFE}.json")
+
+PHOTO_QUEUE = queue.Queue()
+QUEUED_FILES = set()
+IN_PROGRESS_FILES = set()
 
 
 # =====================================================================
@@ -109,11 +121,76 @@ eye_checker = ONNXEyeChecker()
 # =====================================================================
 # CULLING & RAW PULL LOGIC
 # =====================================================================
-def is_blurry(file_path, threshold=BLUR_THRESHOLD):
+def calculate_blur_score(file_path):
     image = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
-        return True
-    return cv2.Laplacian(image, cv2.CV_64F).var() < threshold
+        return float("-inf")
+    return float(cv2.Laplacian(image, cv2.CV_64F).var())
+
+
+def is_blurry(file_path, threshold=BLUR_THRESHOLD):
+    return calculate_blur_score(file_path) < threshold
+
+
+def save_score_cache(
+    filename, status, blur_score, ear_score, reason, folder_path, app_base_dir=BASE_DIR
+):
+    """Persist the last score result for this app base URL as JSON cache."""
+    cache_payload = {"app_base_url": APP_BASE_URL, "photos": []}
+    app_base_dir_safe = app_base_dir.replace("\\", "/").replace("/", "_")
+    cache_file = os.path.join(CACHE_DIR, f"{app_base_dir_safe}.json")
+
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, encoding="utf-8") as cache_handle:
+                loaded_payload = json.load(cache_handle)
+            if isinstance(loaded_payload, dict):
+                cache_payload = loaded_payload
+        except (json.JSONDecodeError, OSError):
+            cache_payload = {"app_base_url": APP_BASE_URL, "photos": []}
+
+    if not isinstance(cache_payload.get("photos"), list):
+        cache_payload["photos"] = []
+
+    safe_blur_score = (
+        float(blur_score)
+        if blur_score is not None and np.isfinite(float(blur_score))
+        else 0.0
+    )
+    safe_ear_score = (
+        float(ear_score)
+        if ear_score is not None and np.isfinite(float(ear_score))
+        else 0.0
+    )
+
+    record = {
+        "filename": filename,
+        "status": status,
+        "blur_score": round(safe_blur_score, 2),
+        "ear_score": round(safe_ear_score, 2),
+        "reason": reason,
+        "folder_path": folder_path,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+    existing_index = next(
+        (
+            index
+            for index, item in enumerate(cache_payload["photos"])
+            if item.get("filename") == filename
+        ),
+        None,
+    )
+    if existing_index is None:
+        cache_payload["photos"].append(record)
+    else:
+        cache_payload["photos"][existing_index] = record
+
+    cache_payload["app_base_url"] = APP_BASE_URL
+    cache_payload["last_updated"] = record["timestamp"]
+
+    with open(cache_file, "w", encoding="utf-8") as cache_handle:
+        json.dump(cache_payload, cache_handle, indent=2, sort_keys=True)
 
 
 def _broadcast_filtered_photo(
@@ -167,23 +244,36 @@ def pull_matching_raw(raw_filename, destination_dir=LIGHTROOM_WATCH_DIR):
 
 def process_photo(
     file_path,
-    watched_dir=LIGHTROOM_WATCH_DIR,
+    incoming_dir=INCOMING_DIR,
     trash_dir=TRASH_DIR,
+    watched_dir=LIGHTROOM_WATCH_DIR,
 ):
     filename = os.path.basename(file_path)
     base_name, _ = os.path.splitext(filename)
     time.sleep(0.05)  # Buffer to allow OS write-lock release
 
+    blur_score = calculate_blur_score(file_path)
+
     # Step 1: Laplacian Blur Check
-    image = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
-    blur_score = (
-        float(cv2.Laplacian(image, cv2.CV_64F).var()) if image is not None else 0.0
-    )
     if blur_score < BLUR_THRESHOLD:
         print(f"[X] REJECTED (Blur): {filename} -> Trash")
         os.rename(file_path, os.path.join(trash_dir, filename))
+        save_score_cache(
+            filename,
+            "rejected",
+            blur_score,
+            0.0,
+            "Blur",
+            os.path.basename(trash_dir),
+            app_base_dir=incoming_dir,
+        )
         _broadcast_filtered_photo(
-            filename, "rejected", blur_score, None, "Blur", "2_AI_Trash"
+            filename,
+            "rejected",
+            blur_score,
+            None,
+            "Blur",
+            "2_AI_Trash",
         )
         return
 
@@ -192,8 +282,22 @@ def process_photo(
     if not eyes_open:
         print(f"[X] REJECTED ({reason}): {filename} -> Trash")
         os.rename(file_path, os.path.join(trash_dir, filename))
+        save_score_cache(
+            filename,
+            "rejected",
+            blur_score,
+            ear_score,
+            reason,
+            os.path.basename(trash_dir),
+            app_base_dir=incoming_dir,
+        )
         _broadcast_filtered_photo(
-            filename, "rejected", blur_score, ear_score, reason, "2_AI_Trash"
+            filename,
+            "rejected",
+            blur_score,
+            ear_score,
+            reason,
+            "2_AI_Trash",
         )
         return
 
@@ -201,8 +305,22 @@ def process_photo(
     print(f"[✓] PASSED: {filename} ({reason}) -> Lightroom Watch Folder")
     passed_jpg_path = os.path.join(watched_dir, filename)
     os.rename(file_path, passed_jpg_path)
+    save_score_cache(
+        filename,
+        "passed",
+        blur_score,
+        ear_score,
+        reason,
+        os.path.basename(watched_dir),
+        app_base_dir=incoming_dir,
+    )
     _broadcast_filtered_photo(
-        filename, "passed", blur_score, ear_score, reason, "3_Lightroom_Watch"
+        filename,
+        "passed",
+        blur_score,
+        ear_score,
+        reason,
+        "3_Lightroom_Watch",
     )
 
     # Step 4: Optional Active RAW Pull over Camera FTP
@@ -217,7 +335,61 @@ def process_photo(
 # =====================================================================
 # WATCHDOG FILE LISTENER
 # =====================================================================
+def enqueue_photo(file_path, incoming_dir=INCOMING_DIR):
+    """Add JPG/JPEG uploads to the culling queue when they are not already queued."""
+    if not os.path.isfile(file_path):
+        return
+    if not file_path.lower().endswith((".jpg", ".jpeg")):
+        return
+
+    normalized = os.path.abspath(file_path)
+    if normalized in QUEUED_FILES or normalized in IN_PROGRESS_FILES:
+        return
+
+    QUEUED_FILES.add(normalized)
+    PHOTO_QUEUE.put((file_path, incoming_dir))
+    print(f"[+] Queued for culling: {os.path.basename(file_path)}")
+
+
+def drain_existing_photos(incoming_dir=INCOMING_DIR):
+    """Queue any files already in the incoming folder when the service starts."""
+    if not os.path.isdir(incoming_dir):
+        return
+    for filename in sorted(os.listdir(incoming_dir)):
+        file_path = os.path.join(incoming_dir, filename)
+        if os.path.isfile(file_path):
+            enqueue_photo(file_path, incoming_dir=incoming_dir)
+
+
+def process_queue():
+    """Consume the incoming photo queue continuously with the culling workflow."""
+    while True:
+        file_path, incoming_dir = PHOTO_QUEUE.get()
+        normalized = os.path.abspath(file_path)
+        try:
+            IN_PROGRESS_FILES.add(normalized)
+            if not os.path.exists(file_path):
+                continue
+            process_photo(file_path, incoming_dir=incoming_dir)
+        except Exception as exc:
+            print(f"[!] Culling queue error for {file_path}: {exc}")
+        finally:
+            QUEUED_FILES.discard(normalized)
+            IN_PROGRESS_FILES.discard(normalized)
+            PHOTO_QUEUE.task_done()
+
+
 class IncomingPhotoHandler(FileSystemEventHandler):
+    def __init__(
+        self,
+        incoming_dir=INCOMING_DIR,
+        trash_dir=TRASH_DIR,
+        lightroom_watch_dir=LIGHTROOM_WATCH_DIR,
+    ):
+        self.incoming_dir = incoming_dir
+        self.trash_dir = trash_dir
+        self.lightroom_watch_dir = lightroom_watch_dir
+
     def on_created(self, event):
         if event.is_directory:
             return
@@ -230,39 +402,16 @@ class IncomingPhotoHandler(FileSystemEventHandler):
             except FileNotFoundError:
                 return
             self.process_pending_photos()
-        elif event.src_path.lower().endswith((".jpg", ".jpeg")):
+            return
+
+        if event.src_path.lower().endswith((".jpg", ".jpeg")):
             if is_filtering_enabled(BASE_DIR):
-                self.queue_photo(event.src_path)
+                enqueue_photo(event.src_path, incoming_dir=self.incoming_dir)
 
     def process_pending_photos(self):
-        for entry in os.scandir(INCOMING_DIR):
+        for entry in os.scandir(self.incoming_dir):
             if entry.is_file() and entry.name.lower().endswith((".jpg", ".jpeg")):
-                self.queue_photo(entry.path)
-
-    def queue_photo(self, file_path):
-        with _processing_lock:
-            if file_path in _processing_paths:
-                return
-            _processing_paths.add(file_path)
-
-        def run():
-            try:
-                process_photo(file_path)
-            except FileNotFoundError:
-                logging.info("Skipping JPG no longer in incoming folder: %s", file_path)
-            except Exception:
-                logging.exception("Failed to filter incoming JPG: %s", file_path)
-            finally:
-                with _processing_lock:
-                    _processing_paths.discard(file_path)
-
-        worker = threading.Thread(target=run, daemon=True)
-        try:
-            worker.start()
-        except Exception:
-            with _processing_lock:
-                _processing_paths.discard(file_path)
-            raise
+                enqueue_photo(entry.path, incoming_dir=self.incoming_dir)
 
 
 _processing_lock = threading.Lock()
@@ -270,8 +419,17 @@ _processing_paths = set()
 
 
 if __name__ == "__main__":
+    consumer_thread = threading.Thread(target=process_queue, daemon=True)
+    consumer_thread.start()
+
+    drain_existing_photos(incoming_dir=INCOMING_DIR)
+
     observer = Observer()
-    handler = IncomingPhotoHandler()
+    handler = IncomingPhotoHandler(
+        incoming_dir=INCOMING_DIR,
+        trash_dir=TRASH_DIR,
+        lightroom_watch_dir=LIGHTROOM_WATCH_DIR,
+    )
     observer.schedule(handler, path=INCOMING_DIR, recursive=False)
     observer.start()
     print(f"[+] Active Culling Engine watching: {INCOMING_DIR}")
